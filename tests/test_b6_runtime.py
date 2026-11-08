@@ -1,4 +1,5 @@
 """Real compilation, browser, HTTP, persistence and fault recovery; scripted inference only."""
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -9,12 +10,14 @@ import unittest
 from unittest.mock import patch
 
 import yaml
-from compact_inventory_fixture import BUSINESS, APP, ACCEPTANCE
+from compact_inventory_fixture import BUSINESS, APP, ACCEPTANCE, IDS
 from test_b6_compact import requirements
-from infrastructure.compact.compiler import CompactCompiler, SPEC
+from infrastructure.compact.compiler import CheckFailed, CompactCompiler, require_coverage, SPEC
+from infrastructure.compact.acceptance import render_suite
 from infrastructure.compact.runtime import verify_runtime
 from infrastructure.shared.models.text import TextModel
 from infrastructure.stages.frontend.triggers.testing import E2EChecks
+from infrastructure.stages.frontend.ui.testing import parse_playwright_result
 from infrastructure.utils.processes import capture_process
 
 
@@ -25,16 +28,96 @@ class ReusableRuntimeIntegration(unittest.TestCase):
         if not modules or not shutil.which('node'): raise unittest.SkipTest('Set ARC_CONTRACT_TEST_NODE_MODULES to trusted installed dependencies')
         cls.modules = Path(modules).resolve()
 
+    def link_modules(self, output):
+        link = output / 'node_modules'
+        if os.name == 'nt':
+            subprocess.run(['powershell', '-NoProfile', '-Command',
+                'New-Item -ItemType Junction -Path $env:ARC_TEST_LINK -Target $env:ARC_TEST_MODULES | Out-Null'],
+                env={**os.environ, 'ARC_TEST_LINK': str(link), 'ARC_TEST_MODULES': str(self.modules)}, check=True)
+        else:
+            link.symlink_to(self.modules, target_is_directory=True)
+        return link
+
+    def test_passing_navigation_only_test_has_no_executed_coverage(self):
+        output = Path(self.enterContext(TemporaryDirectory()))
+        junction = self.link_modules(output)
+        self.addCleanup(os.rmdir if os.name == 'nt' else Path.unlink, junction)
+        (output / 'old.spec.ts').write_text(
+            "import {test} from '@playwright/test';\n"
+            "test('navigation only', {annotation:{type:'arc-step',description:'STEP-CREATE'}}, "
+            "async ({page}) => {await page.goto('data:text/html,inventory');});\n", encoding='utf8')
+        result = E2EChecks(output).execute(['node_modules/@playwright/test/cli.js', 'test',
+                                            'old.spec.ts', '--reporter=json'])
+        report = parse_playwright_result(result, include_files=True)
+        self.assertEqual((report['returncode'], report['passed']), (0, 1), report)
+        self.assertEqual(report['cases'][0]['asserted_ids_by_run'], [[]])
+        require_coverage(report, ['STEP-CREATE'], executed=False)
+        with self.assertRaisesRegex(ValueError, 'Missing executed browser assertions.*STEP-CREATE'):
+            require_coverage(report, ['STEP-CREATE'], executed=True)
+
+    def test_frozen_browser_oracle_rejects_three_mutants(self):
+        output = Path(self.enterContext(TemporaryDirectory()))
+        junction = self.link_modules(output)
+        self.addCleanup(os.rmdir if os.name == 'nt' else Path.unlink, junction)
+        compiler = CompactCompiler(output / 'unused', output)
+        with patch.object(E2EChecks, 'install_browser'):
+            compiler.prepare()
+        compiler.data = {'coverage': IDS}
+        compiler.checks = E2EChecks(output)
+        spec = output / SPEC
+        spec.parent.mkdir(parents=True, exist_ok=True)
+        spec.write_text(render_suite(ACCEPTANCE, IDS), encoding='utf8')
+        compiler.frozen_tests = sha256(spec.read_bytes()).hexdigest()
+        correct = APP.replace('/api/WRONG', '/api/items')
+        app_file = output / 'frontend/src/App.tsx'
+        api_file = output / 'backend/src/business/index.ts'
+        app_file.write_text(correct, encoding='utf8')
+        api_file.write_text(BUSINESS, encoding='utf8')
+        typed = compiler.checks.typecheck([SPEC], full_source=False)
+        self.assertEqual(typed['returncode'], 0, typed['output'])
+        reference = compiler.verify()
+        self.assertEqual(reference['passed'], 1)
+        self.assertEqual(reference['scenario_mapping']['mapped_ids'], sorted(IDS))
+        expected_ids = [step['id'] for step in ACCEPTANCE['cases'][0]['steps']]
+        evidence_path = output / '.arc/compact-last-tests.json'
+        report = json.loads(evidence_path.read_text(encoding='utf8'))
+        self.assertEqual(report['cases'][0]['asserted_ids_by_run'], [expected_ids])
+        print('Correct implementation passed all three original IDs.', flush=True)
+        mutants = [
+            ('delete-link', app_file, correct, '<button onClick={()=>setDeleting(row)}>Delete</button>',
+             '<a href="#delete" onClick={()=>setDeleting(row)}>Delete</a>', 'STEP-DELETE', "Delete", 8),
+            ('cancel-saves', app_file, correct, '<Link href="/">Cancel</Link>',
+             '<Link href="/" onClick={e=>{e.preventDefault();e.currentTarget.closest("form")!.requestSubmit();}}>Cancel</Link>',
+             'STEP-EDIT', 'Blue pen', 5),
+            ('list-consumes-data', api_file, BUSINESS, "r.json(store.list('items'));",
+             "const rows=store.list('items');r.json(rows);for(const row of rows)store.delete('items',row.id);",
+             'STEP-CREATE', 'Blue pen', 3),
+        ]
+        for name, path, original, old, new, step_id, locator, passed_before_failure in mutants:
+            with self.subTest(name=name):
+                self.assertEqual(original.count(old), 1)
+                path.write_text(original.replace(old, new), encoding='utf8')
+                try:
+                    with self.assertRaises(CheckFailed) as caught:
+                        compiler.verify()
+                    self.assertEqual(caught.exception.feedback['kind'], 'acceptance')
+                    evidence = json.loads(evidence_path.read_text(encoding='utf8'))
+                    self.assertEqual((evidence['passed'], evidence['failed']), (0, 1), evidence)
+                    failure = evidence['failures'][0]
+                    for expected in (step_id, locator, 'toBeVisible'):
+                        self.assertIn(expected, failure)
+                    receipts, = evidence['cases'][0]['asserted_ids_by_run']
+                    self.assertEqual(receipts, expected_ids[:passed_before_failure])
+                    self.assertEqual(sha256(spec.read_bytes()).hexdigest(), compiler.frozen_tests)
+                    print(f'{name}: {step_id} rejected at {locator!r} after {len(receipts)} passing assertions.', flush=True)
+                finally:
+                    path.write_text(original, encoding='utf8')
+
     def test_full_compact_route_repairs_real_browser_failure_and_preserves_runtime(self):
         with TemporaryDirectory() as directory:
             root=Path(directory); source=root/'input';source.mkdir();output=root/'application';output.mkdir()
             (source/'requirements.yaml').write_text(yaml.safe_dump(requirements()),encoding='utf8')
-            junction=output/'node_modules'
-            if os.name=='nt':
-                quote=lambda p:"'"+str(p).replace("'","''")+"'"
-                subprocess.run(['powershell','-NoProfile','-Command','New-Item -ItemType Junction -Path '
-                                +quote(junction)+' -Target '+quote(self.modules)+' | Out-Null'],check=True)
-            else:junction.symlink_to(self.modules,target_is_directory=True)
+            junction=self.link_modules(output)
             requests=[]
             # Exercise the actual TextModel policy/serialization path, intercepting only transport.
             model=TextModel.__new__(TextModel);model.name='deepseek-flash';model.reasoning='low'

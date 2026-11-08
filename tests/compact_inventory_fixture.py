@@ -45,22 +45,34 @@ export function App(){
 }
 '''
 
-ACCEPTANCE = {'cases': [{'title': 'Create, edit, cancel and delete an item',
-    'covers': ['STEP-CREATE', 'STEP-EDIT', 'STEP-DELETE'], 'body': '''
- await page.goto('/');await expect(page.getByText('No items',{exact:true})).toBeVisible();
- await page.getByRole('button',{name:'Create',exact:true}).click();
- await expect(page.getByRole('alert')).toHaveText('Name is required');
- await page.getByLabel('Name',{exact:true}).fill('Blue pen');await page.getByRole('button',{name:'Create',exact:true}).click();
- await expect(page.getByRole('link',{name:'Blue pen',exact:true})).toBeVisible();
- await page.reload();await expect(page.getByRole('link',{name:'Blue pen',exact:true})).toBeVisible();
- await page.getByRole('link',{name:'Blue pen',exact:true}).click();await expect(page.getByLabel('Name',{exact:true})).toHaveValue('Blue pen');
- await page.getByLabel('Name',{exact:true}).fill('Unwanted');await page.getByRole('link',{name:'Cancel',exact:true}).click();
- await expect(page.getByRole('link',{name:'Blue pen',exact:true})).toBeVisible();
- await page.getByRole('link',{name:'Blue pen',exact:true}).click();await page.getByLabel('Name',{exact:true}).fill('Red pen');
- await page.getByRole('button',{name:'Save',exact:true}).click();await expect(page.getByRole('link',{name:'Red pen',exact:true})).toBeVisible();
- await page.reload();await expect(page.getByRole('link',{name:'Red pen',exact:true})).toBeVisible();
- await page.getByRole('button',{name:'Delete',exact:true}).click();await page.getByRole('dialog').getByRole('button',{name:'Cancel',exact:true}).click();
- await expect(page.getByRole('link',{name:'Red pen',exact:true})).toBeVisible();
- await page.getByRole('button',{name:'Delete',exact:true}).click();await page.getByRole('dialog').getByRole('button',{name:'Confirm delete',exact:true}).click();
- await expect(page.getByText('No items',{exact:true})).toBeVisible();await page.reload();await expect(page.getByText('No items',{exact:true})).toBeVisible();
-'''}]}
+BLUE = "page.getByRole('link',{name:'Blue pen',exact:true})"
+RED = "page.getByRole('link',{name:'Red pen',exact:true})"
+DELETE = "page.getByRole('button',{name:'Delete',exact:true})"
+NAME = "page.getByLabel('Name',{exact:true})"
+EMPTY = "page.getByText('No items',{exact:true})"
+CREATE = "page.getByRole('button',{name:'Create',exact:true})"
+CANCEL = "page.getByRole('link',{name:'Cancel',exact:true})"
+DIALOG = "page.getByRole('dialog')"
+IDS = ['STEP-CREATE', 'STEP-EDIT', 'STEP-DELETE']
+
+
+def checkpoint(step, body, target, matcher="toBeVisible", *args):
+    return {'id': step, 'body': body, 'target': target, 'matcher': matcher, 'args': list(args)}
+
+
+ACCEPTANCE = {'cases': [{'title': 'Create, edit, cancel and delete an item', 'steps': [
+    checkpoint('STEP-CREATE', "await page.goto('/');", EMPTY),
+    checkpoint('STEP-CREATE', f"await {CREATE}.click();", "page.getByRole('alert')", 'toHaveText', 'Name is required'),
+    checkpoint('STEP-CREATE', f"await {NAME}.fill('Blue pen'); await {CREATE}.click();", BLUE),
+    checkpoint('STEP-CREATE', "await page.reload();", BLUE),
+    checkpoint('STEP-EDIT', f"await {BLUE}.click();", NAME, "toHaveValue", "Blue pen"),
+    checkpoint('STEP-EDIT', f"await {NAME}.fill('Unwanted'); await {CANCEL}.click(); "
+               "await page.waitForURL('**/'); await page.reload();", BLUE),
+    checkpoint('STEP-EDIT', f"await {BLUE}.click(); await {NAME}.fill('Red pen'); "
+               "await page.getByRole('button',{name:'Save',exact:true}).click();", RED),
+    checkpoint('STEP-EDIT', "await page.reload();", RED),
+    checkpoint('STEP-DELETE', "", DELETE),
+    checkpoint('STEP-DELETE', f"await {DELETE}.click(); await {DIALOG}.getByRole('button',{{name:'Cancel',exact:true}}).click();", RED),
+    checkpoint('STEP-DELETE', f"await {DELETE}.click(); await {DIALOG}.getByRole('button',{{name:'Confirm delete',exact:true}}).click();", EMPTY),
+    checkpoint('STEP-DELETE', "await page.reload();", EMPTY),
+]}]}

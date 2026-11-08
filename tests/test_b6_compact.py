@@ -106,7 +106,7 @@ class CompactMechanisms(unittest.TestCase):
 
     def test_scenario_mapping_rejects_missing_skipped_failed_and_expected_failure(self):
         good = {'annotations': [{'type': 'arc-step', 'description': 'STEP-CREATE'}],
-                'expected_status': 'passed', 'outcomes': ['passed']}
+                'expected_status': 'passed', 'outcomes': ['passed'], 'asserted_ids_by_run': [['STEP-CREATE']]}
         self.assertFalse(require_coverage({'cases': [good]}, ['STEP-CREATE'], True)['semantic_coverage_proven'])
         for changes in ({'outcomes': ['skipped']}, {'outcomes': []}, {'outcomes': ['failed']},
                         {'expected_status': 'failed'}, {'annotations': []}):

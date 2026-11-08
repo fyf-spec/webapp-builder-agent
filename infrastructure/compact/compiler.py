@@ -8,7 +8,7 @@ from pathlib import Path
 from time import monotonic
 
 from infrastructure.compact.requirements import load_requirements
-from infrastructure.compact.acceptance import AUTHOR_RULES, render_suite
+from infrastructure.compact.acceptance import AUTHOR_RULES, MissingAssertion, render_suite
 from infrastructure.compact.runtime import API_GUIDE, install_runtime, verify_runtime, writable
 from infrastructure.shared.agent.loop import run_file_agent
 from infrastructure.shared.agent.model_policy import task_call, ContextBudgetExceeded
@@ -164,8 +164,18 @@ def require_coverage(result, required, executed):
     for case in result.get('cases', []):
         if case.get('expected_status', 'passed') != 'passed':
             raise ValueError('Acceptance tests cannot expect failure or skip')
-        if executed and (not case.get('outcomes') or any(s != 'passed' for s in case['outcomes'])): continue
-        found.update(a.get('description') for a in case.get('annotations', []) if a.get('type') == 'arc-step')
+        declared = {a.get('description') for a in case.get('annotations', []) if a.get('type') == 'arc-step'}
+        if executed:
+            outcomes = case.get('outcomes', [])
+            if not outcomes or any(status != 'passed' for status in outcomes):
+                raise ValueError(f"Acceptance case did not pass: {case.get('title', '')}")
+            receipts = case.get('asserted_ids_by_run', [])
+            if len(receipts) != len(outcomes):
+                raise MissingAssertion(f"Missing executed browser assertions for a run of {case.get('title', '')}")
+            for ids in receipts:
+                if missing := declared - set(ids):
+                    raise MissingAssertion('Missing executed browser assertions: ' + ', '.join(sorted(missing)))
+        found.update(declared)
     missing = set(required) - found
     if missing: raise ValueError('Original outcomes lack ' + ('passing tests: ' if executed else 'collected tests: ') + ', '.join(sorted(missing)))
     return {'mapped_ids': sorted(found.intersection(required)), 'semantic_coverage_proven': False}
@@ -314,7 +324,7 @@ class CompactCompiler:
                 if typed['returncode']:
                     raise ValueError(typed.get('output', '')[-6000:])
                 return
-            except ContextBudgetExceeded:
+            except (ContextBudgetExceeded, MissingAssertion):
                 raise
             except ValueError as error:
                 if attempt or self.budget.limit - len(self.budget.events) <= 1:
@@ -345,7 +355,11 @@ class CompactCompiler:
         tests = self.checked('browser_tests', lambda: self.checks.tests([SPEC]))
         save_json(self.arc_dir / 'compact-last-tests.json', tests)
         try: coverage = require_coverage(tests, self.data['coverage'], True)
+        except MissingAssertion:
+            self.report['checks'][-1]['status'] = 'FAILED'
+            raise
         except ValueError as error:
+            self.report['checks'][-1]['status'] = 'FAILED'
             raise CheckFailed({'kind': 'acceptance', 'error': str(error),
                 'failed_cases': [c for c in tests.get('cases', []) if not c.get('outcomes') or any(o != 'passed' for o in c['outcomes'])],
                 'errors': tests.get('errors', []), 'failures': [f[:6000] for f in tests.get('failures', [])[:8]],

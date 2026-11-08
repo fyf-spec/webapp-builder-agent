@@ -7,10 +7,10 @@ import unittest
 from unittest.mock import Mock, patch
 
 import yaml
-from compact_inventory_fixture import ACCEPTANCE, APP, BUSINESS
+from compact_inventory_fixture import ACCEPTANCE, APP, BUSINESS, IDS
 from test_b6_compact import requirements
 from infrastructure.compact.acceptance import render_suite
-from infrastructure.compact.compiler import Budget, CompactCompiler, SPEC
+from infrastructure.compact.compiler import Budget, CompactCompiler, require_coverage, SPEC
 from infrastructure.compact.runtime import install_runtime
 from infrastructure.shared.agent.model_policy import inference_policy
 
@@ -19,8 +19,8 @@ class LeanCompact(unittest.TestCase):
     def test_two_call_compile_keeps_original_requirements_and_runs_checks(self):
         root = requirements()
         case = {'expected_status': 'passed', 'outcomes': ['passed'],
-                'annotations': [{'type': 'arc-step', 'description': step}
-                                for step in ACCEPTANCE['cases'][0]['covers']]}
+                'asserted_ids_by_run': [IDS], 'annotations': [{'type': 'arc-step', 'description': step}
+                                for step in IDS]}
         with TemporaryDirectory() as tmp, patch.dict(os.environ, {'ARC_B6_MAX_MODEL_CALLS': '2'}):
             directory = Path(tmp)
             (directory / 'requirements.yaml').write_text(yaml.safe_dump(root), encoding='utf8')
@@ -51,16 +51,45 @@ class LeanCompact(unittest.TestCase):
             self.assertEqual([r['name'] for r in compiler.report['checks']],
                              ['test_collection', 'test_typecheck', 'build', 'browser_tests'])
             suite = (output / SPEC).read_text(encoding='utf8')
-            for step in ACCEPTANCE['cases'][0]['covers']:
+            for step in IDS:
                 self.assertIn(step, suite)
             receipt = json.loads((output / '.arc/compact-metrics.json').read_text(encoding='utf8'))
             self.assertTrue(all(e['input_tokens'] is None for e in receipt['events']))
 
     def test_missing_or_invented_step_rejected_before_browser(self):
         with self.assertRaisesRegex(ValueError, 'Missing required outcomes'):
-            render_suite(ACCEPTANCE, [*ACCEPTANCE['cases'][0]['covers'], 'NEW'])
+            render_suite(ACCEPTANCE, [*IDS, 'NEW'])
         with self.assertRaisesRegex(ValueError, 'original coverage IDs'):
             render_suite(ACCEPTANCE, ['STEP-CREATE'])
+
+    def test_actions_or_constant_checks_cannot_claim_coverage(self):
+        case = {'title': 'empty oracle', 'covers': IDS, 'body': "await page.goto('/');"}
+        with self.assertRaisesRegex(ValueError, 'assertion checkpoints'):
+            render_suite({'cases': [case]}, IDS)
+        for fields in ({}, {'target': 'true', 'matcher': 'toBe', 'args': [True]}):
+            case['steps'] = [{'id': IDS[0], 'body': '// await expect(page)...', **fields}]
+            with self.subTest(fields=fields), self.assertRaisesRegex(ValueError, 'browser target'):
+                render_suite({'cases': [case]}, IDS[:1])
+
+    def test_missing_assertion_stops_author_without_a_model_retry(self):
+        with TemporaryDirectory() as tmp:
+            compiler = CompactCompiler(tmp, tmp)
+            model = Mock()
+            model.generate_json.return_value = {'cases': [{'title': 'only navigate', 'covers': IDS,
+                                                           'body': "await page.goto('/');"}]}
+            with self.assertRaisesRegex(ValueError, 'assertion checkpoints'):
+                compiler.author(model, {'root': requirements(), 'coverage': IDS}, [])
+            model.generate_json.assert_called_once()
+
+    def test_inventory_cannot_substitute_for_executed_assertions(self):
+        case = {'annotations': [{'type': 'arc-step', 'description': i} for i in IDS],
+                'outcomes': ['passed']}
+        result = {'cases': [case]}
+        self.assertEqual(require_coverage(result, IDS, False)['mapped_ids'], sorted(IDS))
+        for receipts in ([], [[]], [IDS[:1]], [IDS, []]):
+            case['asserted_ids_by_run'] = receipts
+            with self.subTest(receipts=receipts), self.assertRaisesRegex(ValueError, 'executed browser assertions'):
+                require_coverage(result, IDS, True)
 
     def test_retry_only_wrapped_upstream_reset_and_keep_generation_slot(self):
         reset = RuntimeError("model_proxy_error: connection reset by peer")

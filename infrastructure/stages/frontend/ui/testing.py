@@ -139,7 +139,10 @@ def parse_playwright_result(result: dict, include_files: bool = False) -> dict:
             for test in spec.get("tests", []):
                 cases.append({'file': filename, 'title': spec.get('title', ''),
                     'annotations': test.get('annotations', []), 'expected_status': test.get('expectedStatus', 'passed'),
-                    'outcomes': [run.get('status') for run in test.get('results', [])]})
+                    'outcomes': [run.get('status') for run in test.get('results', [])],
+                    'asserted_ids_by_run': [[a['description'] for a in run.get('annotations', [])
+                        if a.get('type') == 'arc-asserted' and isinstance(a.get('description'), str)]
+                        for run in test.get('results', [])]})
                 for run in test.get("results", []):
                     if run.get("status") not in {"passed", "skipped"}:
                         failures.append("\n".join(item.get("message", "") for item in run.get("errors", [])) + "\nTest file: " + filename)

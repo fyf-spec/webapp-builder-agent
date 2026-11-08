@@ -8,6 +8,8 @@
 
 每次模型调用的已报告输入、缓存输入、输出、推理 Token 及耗时见 `.arc/compact-metrics.json`，缺失用量标为 null。构建、测试收集、类型检查和浏览器验收的耗时见 `.arc/compilation.json` 的 `checks`。这些检查耗时包含于所在阶段。整站生成默认使用 low 推理，沿用显式的 MODEL_REASONING 设置。
 
+验收作者在同一次调用中为每个需求 ID 指定页面或控件、匹配条件和预期值。编译器生成并等待 Playwright 断言。收集阶段核对声明的 ID，执行阶段逐用例核对实际通过的断言，记录位于 `.arc/compact-last-tests.json` 的 `cases[].asserted_ids_by_run`。旧版仅含覆盖标签的测试需要重新生成才能通过这项检查。
+
 ## 环境
 
 - Python 3.11+、[uv](https://docs.astral.sh/uv/)
