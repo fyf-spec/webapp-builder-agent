@@ -99,7 +99,9 @@ class TextModel:
     def generate_json(self, instructions: str, payload: dict) -> dict:
         """Request JSON using the stage prompt and serialized task data."""
         retained_reads = payload.get('read_files', {})
-        if enabled('context_reuse'):
+        direct = isinstance(payload.get('task'), dict) and payload['task'].get('phase') in {
+            'author_acceptance', 'joint_application'} and 'tools' not in payload
+        if enabled('context_reuse') and not direct:
             before = len(json.dumps(payload, ensure_ascii=False))
             payload = compact_context(payload)
             instructions += '\n' + CONTEXT_RULES
@@ -114,7 +116,8 @@ class TextModel:
         if any(policy_enabled(name) for name in ('task_reasoning','output_budget','context_budget','cache_layout')):
             policy = inference_policy(payload, self)
             mode = policy['reasoning']
-            instructions += '\n' + LAYOUT_RULES
+            if not direct:
+                instructions += '\n' + LAYOUT_RULES
             from infrastructure.utils.presentation.logging import session_info
             session = session_info()
             from infrastructure.shared.agent.model_policy import ContextBudgetExceeded
@@ -131,7 +134,7 @@ class TextModel:
                 model=self.name,
                 messages=[
                     {"role": "system", "content": instructions.rstrip() + "\n" + JSON_OUTPUT_RULE},
-                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(',', ':') if direct else None)},
                 ],
                 **({"response_format": {"type": "json_object"}} if getattr(self, "json_mode", True) else {}),
                 **reasoning_arguments(self.name, mode),

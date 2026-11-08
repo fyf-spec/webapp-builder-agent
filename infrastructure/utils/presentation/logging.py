@@ -92,9 +92,9 @@ def console_log(output_dir: Path, *, debug_model_io: bool = False, model_log: bo
             started = monotonic()
             model_logs = f"Full model I/O: {output_dir / 'model_calls.jsonl'}" if model_log else "Detailed model I/O logs: disabled"
             show_panel(f"[START] {stage_label(script)}", f"{timestamp}\nScript: {script}\nLogs: {output_dir / 'compiler.log'}\n{model_logs}")
-            if script == 'B6_compact':
-                show_panel('B6 compact pipeline',
-                    'Requirements → Reusable runtime → References → Joint plan → Independent tests → '
+            if script == 'B7_compact':
+                show_panel('B7 compact pipeline',
+                    'Requirements → Reusable runtime → References → Independent tests → '
                     'Joint application + bounded repair → Verification report')
             else:
                 show_dashboard(stage_label(script), artifacts)

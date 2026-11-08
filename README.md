@@ -4,7 +4,9 @@
 
 当前输入为包含 `requirements.yaml` 和引用图片的目录；自然语言需求入口尚未实现。
 
-本分支为 **B6.1 三次尝试与工具错误停损**，继承 B6 通用运行库和少轮联合生成。文件编辑、设计提案默认最多三次尝试（含首次），工具权限错误也纳入停止机制。`--pipeline classic` 保留十三阶段调度，并应用新限制。见 [B6.1 说明](docs/b61-three-attempts.md)；费用和官方正确率尚未实测。
+本分支为 **B7**。默认 compact 流程直接从完整原始需求独立生成验收用例和整站实现。程序负责 Playwright 文件、覆盖 ID 与检查，不再单独请求模型写计划。无图片且首次通过时用 2 次文本调用，有图片时每 4 张唯一图片增加 1 次视觉调用。默认总逻辑调用上限为图片批数加 4、最多 12 次，可通过 `ARC_B6_MAX_MODEL_CALLS` 调整。额外的 2 次调用在修正、补读与故障恢复之间共用。官方通过率与实际账单需平台运行取得。
+
+每次模型调用的已报告输入、缓存输入、输出、推理 Token 及耗时见 `.arc/compact-metrics.json`，缺失用量标为 null。构建、测试收集、类型检查和浏览器验收的耗时见 `.arc/compilation.json` 的 `checks`。这些检查耗时包含于所在阶段。整站生成默认使用 low 推理，沿用显式的 MODEL_REASONING 设置。
 
 ## 环境
 
@@ -52,7 +54,7 @@ npm start
 | `infrastructure/stages/` | 需求、数据库、后端、前端处理 |
 | `infrastructure/shared/` | 模型、检索、编辑循环、项目模板 |
 | `tests/` | 编译器及工具测试 |
-| `team-tools/package-baseline.py` | 当前 B6.1 干净打包工具；旧版本使用对应分支 |
+| `team-tools/package-baseline.py` | 当前 B7 干净打包工具；旧版本使用对应分支 |
 | `team-tools/check-stage.py` | 不调用模型的本地单阶段检查 |
 | `team-tools/check-compact.py` | 不调用模型的 B6 构建与浏览器验收复查 |
 

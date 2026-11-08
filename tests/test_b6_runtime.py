@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import yaml
 from compact_inventory_fixture import BUSINESS, APP, ACCEPTANCE
-from test_b6_compact import requirements, plan
+from test_b6_compact import requirements
 from infrastructure.compact.compiler import CompactCompiler, SPEC
 from infrastructure.compact.runtime import verify_runtime
 from infrastructure.shared.models.text import TextModel
@@ -42,10 +42,9 @@ class ReusableRuntimeIntegration(unittest.TestCase):
             def transport(**kwargs):
                 from types import SimpleNamespace
                 payload=json.loads(kwargs['messages'][1]['content']);requests.append(payload)
-                if 'requirements' in payload and 'runtime' in payload: response=plan()
-                elif payload['task'].get('test_path'):
-                    self.assertFalse(any(p.startswith(('backend/src/','frontend/src/')) for p in payload['files']))
-                    response={'tool_calls':[{'tool':'edit_file','path':SPEC,'operation':'create','new_content':ACCEPTANCE}]}
+                if payload['task'].get('test_path'):
+                    self.assertNotIn('files',payload)
+                    response=ACCEPTANCE
                 elif payload['task'].get('phase')=='joint_application':
                     response={'files':[{'path':'backend/src/business/index.ts','content':BUSINESS},
                                        {'path':'frontend/src/App.tsx','content':APP}]}
@@ -63,7 +62,7 @@ class ReusableRuntimeIntegration(unittest.TestCase):
                 with patch.object(E2EChecks,'install_browser'):
                     compiler.compile()
                 self.assertEqual(compiler.report['status'],'GREEN',compiler.report)
-                self.assertEqual(len(requests),4) # plan + independent test author + full app + one real repair
+                self.assertEqual(len(requests),3) # independent test author + full app + one real repair
                 self.assertEqual(compiler.report['verification']['passed'],1)
                 self.assertEqual(len(compiler.report['verification']['scenario_mapping']['mapped_ids']),3)
                 self.assertFalse(compiler.report['verification']['official_evaluation_performed'])

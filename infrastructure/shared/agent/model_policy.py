@@ -40,6 +40,7 @@ def task_call(state, round_number, checked_failures):
 def role_for(payload):
     task = payload.get('task')
     if not isinstance(task, dict): return 'design'
+    if task.get('phase') == 'joint_application': return 'application'
     if 'original_requirements' in task: return 'repair'
     if 'implementation_paths' in task or 'page_paths' in task: return 'edit'
     if 'coverage_steps' in task or 'test_paths' in task or 'test_path' in task: return 'test'
@@ -63,7 +64,7 @@ def inference_policy(payload, model):
     maximum = getattr(model, 'max_output_tokens', 320000)
     output = maximum
     if enabled('output_budget'):
-        default = {'edit':48000,'test':48000,'design':32000,'repair':32000}[role]
+        default = {'edit':48000,'application':48000,'test':48000,'design':32000,'repair':32000}[role]
         initial = setting(role.upper() + '_OUTPUT_TOKENS', default)
         # Expand after rejected rounds, bounded by the user's existing global ceiling.
         output = min(maximum, initial * (2 ** min(context['round'] - 1, 3)))

@@ -45,10 +45,8 @@ export function App(){
 }
 '''
 
-ACCEPTANCE = '''import {test,expect} from '../support/context';
-test('create, persist, cancel edit, rename, cancel delete, and confirm deletion',{
- annotation:['STEP-CREATE','STEP-EDIT','STEP-DELETE'].map(description=>({type:'arc-step',description}))
-},async({page})=>{
+ACCEPTANCE = {'cases': [{'title': 'Create, edit, cancel and delete an item',
+    'covers': ['STEP-CREATE', 'STEP-EDIT', 'STEP-DELETE'], 'body': '''
  await page.goto('/');await expect(page.getByText('No items',{exact:true})).toBeVisible();
  await page.getByRole('button',{name:'Create',exact:true}).click();
  await expect(page.getByRole('alert')).toHaveText('Name is required');
@@ -65,5 +63,4 @@ test('create, persist, cancel edit, rename, cancel delete, and confirm deletion'
  await expect(page.getByRole('link',{name:'Red pen',exact:true})).toBeVisible();
  await page.getByRole('button',{name:'Delete',exact:true}).click();await page.getByRole('dialog').getByRole('button',{name:'Confirm delete',exact:true}).click();
  await expect(page.getByText('No items',{exact:true})).toBeVisible();await page.reload();await expect(page.getByText('No items',{exact:true})).toBeVisible();
-});
-'''
+'''}]}

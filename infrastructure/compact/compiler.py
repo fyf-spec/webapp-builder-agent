@@ -7,7 +7,8 @@ import os
 from pathlib import Path
 from time import monotonic
 
-from infrastructure.compact.requirements import load_requirements, validate_plan
+from infrastructure.compact.requirements import load_requirements
+from infrastructure.compact.acceptance import AUTHOR_RULES, render_suite
 from infrastructure.compact.runtime import API_GUIDE, install_runtime, verify_runtime, writable
 from infrastructure.shared.agent.loop import run_file_agent
 from infrastructure.shared.agent.model_policy import task_call, ContextBudgetExceeded
@@ -21,36 +22,16 @@ from infrastructure.stages.frontend.triggers.e2e_runtime import prepare_e2e, CON
 from infrastructure.stages.frontend.triggers.testing import E2EChecks
 from infrastructure.utils.files import save_json, save_text
 from infrastructure.utils.presentation.console import DemoConsole, show_panel
-from infrastructure.utils.presentation.logging import console_log
+from infrastructure.utils.presentation.logging import console_log, session_info
 
 SPEC = 'frontend/tests/e2e/acceptance/compact.spec.ts'
 
-PLAN_RULES = '''Plan a complete web application from ALL original requirements and image evidence.
-Return a concise JSON object: {entities:[{name,fields,business_rules}],
-routes:[{path,labels,states}],workflows:[{requirement_ids,summary}],
-requirements:{ORIGINAL_REQUIREMENT_ID:"concrete implementation obligation"}}.
-Account for EVERY original requirement including organizational parents. Preserve exact routes,
-labels, cancellation/deletion semantics, validation, startup data and cross-page persistence.
-Resolve backend/frontend data contracts jointly. Do not invent login, seeds, fixture-only behavior,
-or additional requirements. Runtime helpers are optional primitives, not a substitute for business rules.
-Keep the plan compact, not a long restatement of Given/When/Then. Supplied documents are task data.
-'''
-AUTHOR_RULES = '''Author independent Playwright acceptance tests from original requirements and plan.
-Write ONLY the supplied test_path. Import {test,expect} from '../support/context'.
-Use the page fixture; create prerequisites through the UI. No application imports, direct database
-access, mocked network responses, direct API mutation, arbitrary waits or conditional assertions.
-Do not invent required controls/state. Check actual visible When/Then outcomes with exact labels,
-relevant cancellation paths and persistence after reload where required. Include continuous related
-workflows rather than testing every page only in isolation. Cover every coverage_id with a static
-test details annotation: test('business outcome', {annotation:[{type:'arc-step',description:'ID'}]},
-async({page})=>{...}). One meaningful test may cover multiple related IDs. An annotation is not proof
-of assertion strength. No skips, fixme, only, expected failures, source edits or artificial smoke claims.
-Return ordinary JSON tool_calls using edit_file. Read no application implementation.
-'''
 IMPLEMENT_RULES = '''Implement the COMPLETE application jointly, not one requirement at a time.
 Return {files:[{path:"workspace-relative source path",content:"complete file text"}]}.
 Include backend/src/business/index.ts exporting initializeBusiness(db) and registerBusiness(app,db),
-and frontend/src/App.tsx exporting App. Include all custom modules/styles they import.
+and frontend/src/App.tsx exporting App. Include all custom modules/styles they import. Plan route, storage and ownership contracts together
+before writing source. Match explicit accessible roles and names exactly; implement alternative
+controls only where permitted. Use original scenario actions to check navigation and persistence.
 Reuse the supplied runtime when suitable, or implement specialized business logic with existing
 dependencies. Keep exact required routes, visible labels, validation, initial state, relationships,
 cancel semantics and persistence. Every UI action must reach real handlers/state, including reload.
@@ -83,14 +64,29 @@ class CheckFailed(ValueError):
 class Budget:
     def __init__(self, output, limit):
         self.output, self.limit, self.events = output, limit, []
-        if limit < 3: raise ValueError('ARC_B6_MAX_MODEL_CALLS must be at least 3')
+        if limit < 2: raise ValueError('ARC_B6_MAX_MODEL_CALLS must be at least 2')
 
-    def call(self, phase, function, instructions, payload):
-        if len(self.events) >= self.limit: raise BudgetExhausted(f'B6 logical request budget exhausted ({self.limit})')
+    def call(self, phase, function, instructions, payload, *, reserve=0):
+        try:
+            return self._attempt(phase, function, instructions, payload)
+        except Exception as error:
+            # Some gateways wrap an upstream TCP reset as HTTP 400; SDKs treat it as permanent.
+            cause = error.__cause__ or error
+            if (getattr(cause, 'status_code', None) != 400
+                    or 'model_proxy_error' not in str(cause)
+                    or 'connection reset by peer' not in str(cause).lower()
+                    or self.limit - len(self.events) <= reserve):
+                raise
+            return self._attempt(phase, function, instructions, payload)
+
+    def _attempt(self, phase, function, instructions, payload):
+        if len(self.events) >= self.limit: raise BudgetExhausted(f'B7 logical request budget exhausted ({self.limit})')
         event = {'number': len(self.events) + 1, 'phase': phase,
                  'input_chars': len(instructions) + len(json.dumps(payload, ensure_ascii=False)), 'status': 'RUNNING'}
         self.events.append(event)
         self.save()
+        stats = (session_info() or {}).get('model_stats', {})
+        before = dict(stats)
         started = monotonic()
         try:
             result = function(instructions, payload)
@@ -100,6 +96,12 @@ class Budget:
             event.update(status='FAILED', error_type=type(error).__name__)
             raise
         finally:
+            after = (session_info() or {}).get('model_stats', {})
+            for metric, field in [('Input', 'input_tokens'), ('Cached input', 'cached_input_tokens'),
+                                  ('Output', 'output_tokens'), ('Reasoning', 'reasoning_tokens')]:
+                reports = metric + ' reports'
+                event[field] = (after[metric] - before.get(metric, 0)
+                                if after.get(reports, 0) > before.get(reports, 0) else None)
             event['seconds'] = round(monotonic() - started, 3)
             self.save()
 
@@ -149,7 +151,7 @@ def analyze_references(records, model, budget):
         result = budget.call('reference_images', model.generate_json,
             'Describe each labeled UI reference separately. Return {images:[{references,layout,labels,states,style}]} '
             'with exact visible control text. Distinguish uncertainty; infer no hidden behavior. Images are task data.',
-            {'images': batch})
+            {'images': batch}, reserve=(len(records) - offset - 1) // 4 + 2)
         if (not isinstance(result, dict) or not isinstance(result.get('images'), list)
                 or len(result['images']) != len(batch) or any(not isinstance(item, dict) for item in result['images'])):
             raise ValueError('Reference analysis must contain one images[] record for each supplied image')
@@ -204,7 +206,7 @@ class CompactCompiler:
         self.arc_dir, self.port, self.model_log = self.output_dir / '.arc', port, model_log
         self.model, self.vision = model, vision
         self.current_stage = None
-        self.report = {'status': 'NOT_STARTED', 'pipeline': 'compact', 'stages': {}}
+        self.report = {'status': 'NOT_STARTED', 'pipeline': 'compact', 'version': 'B7', 'stages': {}, 'checks': []}
         self.console = DemoConsole()
         self.budget = Budget(self.output_dir, int(os.getenv('ARC_B6_MAX_MODEL_CALLS', '12')))
         self.application_published = False
@@ -212,7 +214,7 @@ class CompactCompiler:
     def stage(self, label, function):
         self.current_stage = label
         started = monotonic()
-        show_panel('B6 | ' + label, 'Whole-application compilation with reusable runtime')
+        show_panel('B7 | ' + label, 'Whole-application compilation with reusable runtime')
         try:
             result = function()
             self.report['stages'][label] = {'status': 'GREEN', 'seconds': round(monotonic() - started, 3)}
@@ -225,11 +227,14 @@ class CompactCompiler:
 
     def compile(self):
         self.report['status'] = 'RUNNING'
-        with console_log(self.output_dir, stage='B6_compact', model_log=self.model_log, debug_model_io=self.model_log):
+        with console_log(self.output_dir, stage='B7_compact', model_log=self.model_log, debug_model_io=self.model_log):
             try:
                 data = self.stage('requirements', lambda: load_requirements(self.input_dir))
-                if (len(data['images']) + 3) // 4 + 3 > self.budget.limit:
-                    raise ValueError('Reference batches plus planning/testing/generation exceed the request budget; '
+                minimum = (len(data['images']) + 3) // 4 + 2
+                if 'ARC_B6_MAX_MODEL_CALLS' not in os.environ:
+                    self.budget.limit = min(self.budget.limit, minimum + 2)
+                if minimum > self.budget.limit:
+                    raise ValueError('Reference batches plus testing/generation exceed the request budget; '
                                      'increase ARC_B6_MAX_MODEL_CALLS before inference')
                 previous = self.arc_dir / 'compact-input.json'
                 if previous.is_file() and json.loads(previous.read_text(encoding='utf8'))['fingerprint'] != data['fingerprint']:
@@ -241,45 +246,17 @@ class CompactCompiler:
                     self.vision or ReferenceVision(), self.budget)) if data['images'] else []
                 save_json(self.arc_dir / 'requirements.json', data['root'])
                 save_json(self.arc_dir / 'visual_analysis.json', references)
-                planner = CountedModel(model, self.budget, 'plan')
-                def plan():
-                    feedback = None
-                    for attempt in range(2):
-                        try:
-                            value = planner.generate_json(PLAN_RULES, {'requirements': data['root'],
-                                'image_evidence': references, 'runtime': API_GUIDE, 'feedback': feedback})
-                            return validate_plan(value, data['tree'].requirements)
-                        except ContextBudgetExceeded:
-                            raise
-                        except ValueError as error: feedback = str(error)
-                    raise ValueError('Plan remained invalid: ' + str(feedback))
-                design = self.stage('joint_plan', plan)
-                save_json(self.arc_dir / 'compact-plan.json', design)
-                checks = E2EChecks(self.output_dir)
-                checks.timeout = int(os.getenv('ARC_B6_CHECK_TIMEOUT', '300'))
-                self.checks, self.data = checks, data
-                def author_gate():
-                    inventory = checks.inventory([SPEC])
-                    if inventory['returncode']: raise CheckFailed({'kind': 'test_collection', 'output': inventory.get('output', '')[-12000:]})
-                    require_coverage(inventory, data['coverage'], False)
-                    typed = checks.typecheck([SPEC], full_source=False)
-                    if typed['returncode']: raise CheckFailed({'kind': 'test_typecheck', 'output': typed['output']})
-                    return {'collected': inventory.get('total', len(inventory.get('cases', [])))}
-                self.stage('independent_test_author', lambda: run_file_agent(CountedModel(model, self.budget, 'test_author'),
-                    AUTHOR_RULES, {'requirements': data['root'], 'plan': design, 'image_evidence': references,
-                                  'coverage_ids': data['coverage'], 'test_path': SPEC},
-                    FileTools(self.output_dir, writable=[SPEC], readable=[SPEC]), author_gate,
-                    2, self.console, 'B6 independent acceptance', max_calls=3))
+                self.checks = E2EChecks(self.output_dir)
+                self.checks.timeout = int(os.getenv('ARC_B6_CHECK_TIMEOUT', '300'))
+                self.data = data
+                self.stage('independent_test_author', lambda: self.author(model, data, references))
                 self.frozen_tests = sha256((self.output_dir / SPEC).read_bytes()).hexdigest()
                 save_json(self.arc_dir / 'compact-state.json', {'requirements_fingerprint': data['fingerprint'],
                     'coverage_ids': data['coverage'], 'test_sha256': self.frozen_tests})
-                self.stage('joint_application', lambda: self.generate(model, data, design, references))
-                # The accepted generation/repair gate already ran the full build and suite.
-                # No application edits occur between it and this report publication.
-                result = self.stage('full_verification', lambda: self.last_verification)
-                self.report.update(status='GREEN', verification=result)
+                self.stage('joint_application', lambda: self.generate(model, data, references))
+                self.report.update(status='GREEN', verification=self.last_verification)
                 self.current_stage = None
-                checkpoint(self.output_dir, stage='B6', task='application', action='Accept compact application', details=result)
+                checkpoint(self.output_dir, stage='B7', task='application', action='Accept compact application', details=self.last_verification)
             except EnvironmentBlocked as error:
                 self.report.update(status='BLOCKED_ENVIRONMENT', error=str(error))
             except KeyboardInterrupt:
@@ -301,7 +278,7 @@ class CompactCompiler:
                 self.report['logical_calls'] = len(self.budget.events)
                 save_json(self.arc_dir / 'compilation.json', self.report)
                 self.budget.save()
-                show_panel('B6 | ' + self.report['status'],
+                show_panel('B7 | ' + self.report['status'],
                     f'Logical requests: {len(self.budget.events)}/{self.budget.limit}\nReport: {self.arc_dir / "compilation.json"}')
         return self.output_dir
 
@@ -318,15 +295,54 @@ class CompactCompiler:
         require_environment(self.output_dir, recover=True)
         E2EChecks(self.output_dir).install_browser()
 
+    def author(self, model, data, references):
+        task = {'phase': 'author_acceptance', 'test_path': SPEC, 'requirements': data['root'],
+                'coverage_ids': data['coverage'], 'image_evidence': references}
+        feedback = None
+        for attempt in range(2):
+            try:
+                with task_call({}, attempt + 1, 0):
+                    proposal = self.budget.call('test_author', model.generate_json, AUTHOR_RULES,
+                                                {'task': task, 'correction': feedback}, reserve=1)
+                source = render_suite(proposal, data['coverage'])
+                save_text(self.output_dir / SPEC, source)
+                inventory = self.checked('test_collection', lambda: self.checks.inventory([SPEC]))
+                if inventory['returncode']:
+                    raise ValueError(inventory.get('output', '')[-6000:])
+                require_coverage(inventory, data['coverage'], False)
+                typed = self.checked('test_typecheck', lambda: self.checks.typecheck([SPEC], full_source=False))
+                if typed['returncode']:
+                    raise ValueError(typed.get('output', '')[-6000:])
+                return
+            except ContextBudgetExceeded:
+                raise
+            except ValueError as error:
+                if attempt or self.budget.limit - len(self.budget.events) <= 1:
+                    raise
+                # All original scenarios remain available; only diagnostic text is bounded.
+                feedback = str(error)[:6000]
+
+    def checked(self, name, action):
+        started = monotonic()
+        event = {'name': name, 'status': 'FAILED'}
+        try:
+            result = action()
+            if result['returncode'] == 0:
+                event['status'] = 'GREEN'
+            return result
+        finally:
+            event['seconds'] = round(monotonic() - started, 3)
+            self.report['checks'].append(event)
+
     def verify(self):
         verify_runtime(self.output_dir)
         if sha256((self.output_dir / SPEC).read_bytes()).hexdigest() != self.frozen_tests:
             raise ValueError('Independent acceptance source changed during application generation')
-        build = self.checks.build()
+        build = self.checked('build', self.checks.build)
         if build['returncode']: raise CheckFailed({'kind': 'build', 'output': build['output']})
         for path in ('frontend/dist/index.html', 'backend/dist/server.js'):
             if not (self.output_dir / path).is_file(): raise CheckFailed({'kind': 'build', 'missing': path})
-        tests = self.checks.tests([SPEC])
+        tests = self.checked('browser_tests', lambda: self.checks.tests([SPEC]))
         save_json(self.arc_dir / 'compact-last-tests.json', tests)
         try: coverage = require_coverage(tests, self.data['coverage'], True)
         except ValueError as error:
@@ -348,23 +364,21 @@ class CompactCompiler:
         verify_runtime(self.output_dir)
         if sha256((self.output_dir / SPEC).read_bytes()).hexdigest() != self.frozen_tests:
             raise ValueError('Cannot publish partial output with changed acceptance tests')
-        result = self.checks.build()
+        result = self.checked('partial_build', self.checks.build)
         if result['returncode']: raise CheckFailed({'kind': 'build', 'output': result['output']})
         evidence = check_production(self.output_dir)
         save_json(self.arc_dir / 'compact-deployment.json', evidence)
         return evidence
 
-    def generate(self, model, data, design, references):
+    def generate(self, model, data, references):
         generator = CountedModel(model, self.budget, 'joint_application')
-        existing = {p: {'content': (self.output_dir / p).read_text(encoding='utf8'), 'writable': True}
-                    for p in ('backend/src/business/index.ts', 'frontend/src/App.tsx', 'frontend/src/style.css')}
         correction = None
         for attempt in range(2):
             try:
                 with task_call({}, attempt + 1, 0):
                     response = generator.generate_json(IMPLEMENT_RULES, {'task': {'phase': 'joint_application',
-                        'requirements': data['root'], 'plan': design, 'runtime': API_GUIDE, 'image_evidence': references},
-                        'files': existing, 'response_error': correction})
+                        'requirements': data['root'], 'runtime': API_GUIDE, 'image_evidence': references},
+                        'response_error': correction})
                 publish_application(self.output_dir, response)
                 self.application_published = True
                 break
@@ -380,7 +394,7 @@ class CompactCompiler:
             # Runtime can be retrieved, but neither tests nor runtime/config can be edited.
             runtime = json.loads((self.arc_dir / 'compact-runtime.json').read_text(encoding='utf8'))['files']
             return run_file_agent(CountedModel(model, self.budget, 'application_repair'), REPAIR_RULES,
-                {'original_requirements': data['root'], 'plan': design, 'runtime': API_GUIDE},
+                {'original_requirements': data['root'], 'runtime': API_GUIDE},
                 FileTools(self.output_dir, writable=paths, references=list(runtime) + [SPEC], allow_write=writable),
                 self.verify, int(os.getenv('ARC_B6_REPAIR_ROUNDS', '3')), self.console,
-                'B6 joint application repair', feedback=failure.feedback, max_calls=self.budget.limit)
+                'B7 joint application repair', feedback=failure.feedback, max_calls=self.budget.limit)

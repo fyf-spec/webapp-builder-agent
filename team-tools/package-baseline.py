@@ -135,43 +135,21 @@ def compiler_path(name: str) -> bool:
     )
 
 
-README_B6 = """# WebApp Builder Agent: B6.1 three-attempt recovery
-
-Entry: python3 main.py REQUIREMENTS_DIRECTORY --output-dir NEW_APPLICATION_DIRECTORY
-Default route: compact. --pipeline classic retains thirteen-pass orchestration with new retry caps.
-Install Python requirements.txt; runtime needs Node.js 22.12+, npm, Git and Bash.
-The platform supplies MODEL/OPENAI_BASE_URL/OPENAI_API_KEY. Credentials are never bundled.
-Default model deepseek-flash; optional VISUAL_MODEL/VISUAL_BASE_URL/VISUAL_API_KEY for images.
-
-General SQLite record/transaction, HTTP/client, navigation/form/table/dialog primitives
-are compiler-owned; business routes/schema/validation/state and specialized UI are generated
-from the supplied requirements. No benchmark application or business seed data is bundled.
-All requirement IDs and original image references are retained. Up to four unique original
-images per vision request; one joint plan, one independent test family, one full-stack
-application generation followed by bounded source-only repair and real build/browser checks.
-Tests cannot read implementation during authoring and remain read-only during app repair.
-Scenario execution mapping is checked, not proof of semantic or official test coverage.
-
-ARC_B6_MAX_MODEL_CALLS=12 caps all logical image/text/read/repair requests. SDK retries
-are outside that counter. ARC_B6_REPAIR_ROUNDS=3; ARC_B6_CHECK_TIMEOUT=300 seconds.
-Edit/proposal tasks default to three attempts INCLUDING the first, not three retries.
-ARC_B3_MAX_EDIT_ROUNDS=3, ARC_B3_MAX_PROPOSAL_ATTEMPTS=3, ARC_B3_MAX_SAME_FAILURES=3.
-Tool errors have stable identities and blocked-path/permitted-source feedback.
-Permission exhaustion cannot reopen through adaptive batch splitting.
-B5.1 text inference/context controls remain; explicit MODEL_REASONING retains precedence.
-Inspect .arc/compilation.json and compact-metrics.json. Deployable partial outputs can
-exit 0 for official grading only after build and isolated production-startup checks;
-their report remains COMPLETED_WITH_FAILURES. Build/environment/startup failures exit nonzero.
-Generated deploy.sh installs/builds both workspaces and starts the real application.
-
-Only zero-paid-inference local tests have been run before packaging. Official quality,
-billed tokens/cost and time savings are unmeasured. This is an experimental candidate.
-"""
+README_B7 = '''# WebApp Builder Agent B7
+Run python main.py REQUIREMENTS_DIRECTORY --output-dir NEW_APPLICATION_DIRECTORY.
+The default compact route uses one independent test author and one full-stack generator.
+Unique reference images run in groups of four. Default logical call ceiling is the image
+batch count + 4, capped at 12. Override with ARC_B6_MAX_MODEL_CALLS if necessary.
+SDK retries are counted separately from logical calls. Inspect .arc/compact-metrics.json
+for provider-reported usage and .arc/compilation.json for local check timings and status.
+Use --pipeline classic for the earlier 13-pass compiler. Installation: Python 3.11+,
+requirements.txt, Node.js 22.12+, npm, Git and Bash. The platform supplies model credentials.
+'''
 
 
-def build(output: Path, variant: str = 'B6.1') -> dict:
-    if variant not in {'B0', 'B6.1'}:
-        raise ValueError('Use frozen branches/packages for previous variants; this branch packages B6.1')
+def build(output: Path, variant: str = 'B7') -> dict:
+    if variant not in {'B0', 'B7'}:
+        raise ValueError('Use frozen branches/packages for previous variants; this branch packages B7')
     names = sorted(name.decode("utf-8") for name in git("ls-files", "-z").split(b"\0")
         if name and compiler_path(name.decode("utf-8")))
     payload = {}
@@ -189,7 +167,7 @@ def build(output: Path, variant: str = 'B6.1') -> dict:
         payload[name] = data
     required = {"main.py", "requirements.txt", "infrastructure/compiler.py",
         "infrastructure/shared/project/templates/deploy.sh"}
-    if variant == 'B6.1':
+    if variant == 'B7':
         required.update({'infrastructure/shared/agent/efficiency.py',
             'infrastructure/shared/agent/batching.py', 'infrastructure/stages/backend/batching.py',
             'infrastructure/stages/frontend/ui/batching.py',
@@ -201,7 +179,7 @@ def build(output: Path, variant: str = 'B6.1') -> dict:
             'infrastructure/shared/agent/retry_policy.py',
             'infrastructure/stages/frontend/triggers/coverage.py',
             'infrastructure/shared/project/templates/package-lock.json',
-            'infrastructure/compact/compiler.py', 'infrastructure/compact/requirements.py',
+            'infrastructure/compact/acceptance.py', 'infrastructure/compact/compiler.py', 'infrastructure/compact/requirements.py',
             'infrastructure/compact/runtime.py',
             'infrastructure/compact/runtime/backend/src/runtime/store.ts',
             'infrastructure/compact/runtime/frontend/src/runtime/ui.tsx'})
@@ -212,9 +190,9 @@ def build(output: Path, variant: str = 'B6.1') -> dict:
         raise ValueError("B0 requires unchanged reference compiler sources. Review changes before packaging.")
     if variant != 'B0' and git('diff', 'HEAD', '--', *names).strip():
         raise ValueError('Commit the reviewed compiler before packaging')
-    payload["README.md"] = (README if variant == 'B0' else README_B6).encode("utf-8")
+    payload["README.md"] = (README if variant == 'B0' else README_B7).encode("utf-8")
     manifest = {
-        "variant": "B0-reference" if variant == 'B0' else 'B6.1-three-attempts', "source_commit": git("rev-parse", "HEAD").decode().strip(),
+        "variant": "B0-reference" if variant == 'B0' else 'B7-lean-compact', "source_commit": git("rev-parse", "HEAD").decode().strip(),
         "baseline_compiler_commit": "e529ae516a2f231e41439b750dfb5b88f7e20657",
         "upstream_commit": UPSTREAM, "compiler_unchanged": unchanged,
         "entrypoint": "main.py", "default_model": "deepseek-flash",
@@ -248,7 +226,7 @@ def build(output: Path, variant: str = 'B6.1') -> dict:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--variant', choices=['B0','B6.1'], default='B6.1')
+    parser.add_argument('--variant', choices=['B0','B7'], default='B7')
     parser.add_argument("--output", type=Path)
     args=parser.parse_args()
     print(json.dumps(build(args.output or ROOT / f'releases/webapp-builder-agent-{args.variant}.zip', args.variant), ensure_ascii=False, indent=2))
